@@ -16,7 +16,25 @@ local Blitbuffer = require("ffi/blitbuffer")
 local Font = require("ui/font")
 local Geom = require("ui/geometry")
 local Math = require("optmath")
-local RenderText = require("ui/rendertext")
+-- AIGC START
+-- 智能选择渲染模块：优先使用优化版本，失败时回退到原版
+local RenderText
+do
+    local ok, RenderTextFast = pcall(require, "ui/rendertext_fast")
+    -- AIGC START
+    if ok and RenderTextFast and type(RenderTextFast.isOptimizationsEnabled) == "function" then
+        local enabled_ok, enabled = pcall(RenderTextFast.isOptimizationsEnabled, RenderTextFast)
+        if enabled_ok and enabled then
+            RenderText = RenderTextFast
+        else
+            RenderText = require("ui/rendertext")
+        end
+    else
+        RenderText = require("ui/rendertext")
+    end
+    -- AIGC END
+end
+-- AIGC END
 local Size = require("ui/size")
 local Widget = require("ui/widget/widget")
 local Screen = require("device").screen

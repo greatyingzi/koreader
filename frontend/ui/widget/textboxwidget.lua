@@ -20,7 +20,25 @@ local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local LineWidget = require("ui/widget/linewidget")
-local RenderText = require("ui/rendertext")
+-- AIGC START
+-- 智能选择渲染模块：优先使用优化版本，失败时回退到原版
+local RenderText
+do
+    local ok, RenderTextFast = pcall(require, "ui/rendertext_fast")
+    -- AIGC START
+    if ok and RenderTextFast and type(RenderTextFast.isOptimizationsEnabled) == "function" then
+        local enabled_ok, enabled = pcall(RenderTextFast.isOptimizationsEnabled, RenderTextFast)
+        if enabled_ok and enabled then
+            RenderText = RenderTextFast
+        else
+            RenderText = require("ui/rendertext")
+        end
+    else
+        RenderText = require("ui/rendertext")
+    end
+    -- AIGC END
+end
+-- AIGC END
 local RightContainer = require("ui/widget/container/rightcontainer")
 local Size = require("ui/size")
 local TextWidget = require("ui/widget/textwidget")
