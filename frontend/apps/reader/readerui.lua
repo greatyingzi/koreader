@@ -35,7 +35,7 @@ local ReaderCropping = require("apps/reader/modules/readercropping")
 local ReaderDeviceStatus = require("apps/reader/modules/readerdevicestatus")
 local ReaderDictionary = require("apps/reader/modules/readerdictionary")
 local ReaderFont = require("apps/reader/modules/readerfont")
-local ReaderGoto = require("apps/reader/modules/readergoto")
+local ReaderGoto = require("apps/reader/modules/readergoto") 
 local ReaderHandMade = require("apps/reader/modules/readerhandmade")
 local ReaderHinting = require("apps/reader/modules/readerhinting")
 local ReaderHighlight = require("apps/reader/modules/readerhighlight")
@@ -652,17 +652,30 @@ function ReaderUI:extendProvider(file, provider, is_provider_forced)
 end
 
 function ReaderUI:showReaderCoroutine(file, provider, seamless)
-    UIManager:show(InfoMessage:new{
-        text = T(_("Opening file '%1'."), BD.filepath(filemanagerutil.abbreviate(file))),
-        timeout = 0.0,
-        invisible = seamless,
-    })
+    -- AIGC START
+    -- 使用快速启动界面替代静态加载提示
+    local FastStartupUI = require("frontend/fast_startup_ui")
+    local startup_ui = FastStartupUI:new()
+    
+    if not seamless then
+        startup_ui:show()
+        startup_ui:updateProgress("init", T(_("正在打开 '%1'..."), BD.filepath(filemanagerutil.abbreviate(file))))
+    else
+        -- seamless模式仍使用原来的不可见提示
+        UIManager:show(InfoMessage:new{
+            text = T(_("Opening file '%1'."), BD.filepath(filemanagerutil.abbreviate(file))),
+            timeout = 0.0,
+            invisible = true,
+        })
+    end
+    -- AIGC END
+    
     -- doShowReader might block for a long time, so force repaint here
     UIManager:forceRePaint()
     UIManager:nextTick(function()
         logger.dbg("creating coroutine for showing reader")
         local co = coroutine.create(function()
-            self:doShowReader(file, provider, seamless)
+            self:doShowReaderWithProgress(file, provider, seamless, startup_ui)
         end)
         local ok, err = coroutine.resume(co)
         if err ~= nil or ok == false then
@@ -671,6 +684,12 @@ function ReaderUI:showReaderCoroutine(file, provider, seamless)
             -- Restore input if we crashed before ReaderUI has restored it
             Device:setIgnoreInput(false)
             Input:inhibitInputUntil(0.2)
+            -- AIGC START
+            -- 清理启动界面
+            if startup_ui and startup_ui.startup_ui then
+                UIManager:close(startup_ui.startup_ui)
+            end
+            -- AIGC END
             UIManager:show(InfoMessage:new{
                 text = _("No reader engine for this file or invalid file.")
             })
@@ -730,6 +749,96 @@ function ReaderUI:doShowReader(file, provider, seamless)
 
     UIManager:show(reader, seamless and "ui" or "full")
 end
+
+-- AIGC START
+-- 带进度显示的文档加载方法
+function ReaderUI:doShowReaderWithProgress(file, provider, seamless, startup_ui)
+    if seamless then
+        UIManager:avoidFlashOnNextRepaint()
+        -- seamless模式直接调用原方法
+        return self:doShowReader(file, provider, seamless)
+    end
+    
+    logger.info("opening file with progress display", file)
+    
+    -- 阶段1: 文档加载
+    startup_ui:updateProgress("document", _("加载文档引擎..."))
+    
+    -- Only keep a single instance running
+    if ReaderUI.instance then
+        logger.warn("ReaderUI instance mismatch! Tried to spin up a new instance, while we still have an existing one:", tostring(ReaderUI.instance))
+        ReaderUI.instance:onClose()
+    end
+    
+    -- 模拟文档加载过程的进度更新
+    UIManager:scheduleIn(0.1, function()
+        startup_ui:updateProgress("document", _("解析文档格式..."))
+    end)
+    
+    local document = DocumentRegistry:openDocument(file, provider)
+    if not document then
+        startup_ui:complete()
+        UIManager:show(InfoMessage:new{
+            text = _("No reader engine for this file or invalid file.")
+        })
+        self:showFileManager(file)
+        return
+    end
+    
+    if document.is_locked then
+        logger.info("document is locked")
+        startup_ui:updateProgress("document", _("解锁文档..."))
+        self._coroutine = coroutine.running() or self._coroutine
+        self:unlockDocumentWithPassword(document)
+        if coroutine.running() then
+            local unlock_success = coroutine.yield()
+            if not unlock_success then
+                startup_ui:complete()
+                self:showFileManager(file)
+                return
+            end
+        end
+    end
+    
+    -- 阶段2: 创建阅读器界面
+    startup_ui:updateProgress("modules", _("初始化阅读器..."))
+    
+    -- 分步骤创建阅读器，避免长时间卡住
+    UIManager:scheduleIn(0.05, function()
+        startup_ui:updateProgress("modules", _("加载阅读模块..."))
+        
+        UIManager:scheduleIn(0.05, function()
+            local reader = ReaderUI:new{
+                dimen = Screen:getSize(),
+                covers_fullscreen = true, -- hint for UIManager:_repaint()
+                document = document,
+                reloading = self.reloading,
+            }
+
+            Screen:setWindowTitle(reader.doc_props.display_title)
+            Device:notifyBookState(reader.doc_props.display_title, document)
+
+            -- 阶段3: 插件加载
+            startup_ui:updateProgress("plugins", _("加载插件..."))
+            
+            UIManager:scheduleIn(0.05, function()
+                local FileManager = require("apps/filemanager/filemanager")
+                if FileManager.instance then
+                    FileManager.instance:onClose()
+                end
+                
+                -- 完成启动
+                startup_ui:updateProgress("ready", _("启动完成！"))
+                
+                UIManager:scheduleIn(0.1, function()
+                    startup_ui:complete()
+                    UIManager:show(reader, "full")
+                end)
+            end)
+        end)
+    end)
+end
+-- AIGC END
 
 function ReaderUI:unlockDocumentWithPassword(document, try_again)
     logger.dbg("show input password dialog")
