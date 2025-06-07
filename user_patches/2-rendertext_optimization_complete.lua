@@ -28,8 +28,10 @@ end
 -- 延迟初始化，避免启动时立即执行
 local RenderTextFast, RenderText = protectedInit()
 if not RenderTextFast then
-    logger.warn("RenderTextFast: 补丁初始化失败，停止加载")
-    return
+    logger.warn("RenderTextFast: 补丁初始化失败，将在稍后重试")
+    -- 不要立即退出，而是创建一个延迟初始化的占位符
+    RenderTextFast = {}
+    RenderText = nil
 end
 
 -- 延迟初始化 G_reader_settings（避免启动早期访问未初始化的全局变量）
@@ -60,6 +62,22 @@ local ENABLE_OPTIMIZATIONS = GLOBAL_OPTIMIZATIONS_ENABLED
 local CACHE_SIZE_LIMIT = 1000
 local BATCH_SIZE_THRESHOLD = 5
 local optimization_setting_checked = false
+
+-- 延迟重试初始化
+local function ensureRenderTextAvailable()
+    if not RenderText then
+        local ok, rt = pcall(require, "ui/rendertext")
+        if ok and rt then
+            RenderText = rt
+            logger.info("RenderTextFast: 延迟初始化成功")
+            return true
+        else
+            logger.dbg("RenderTextFast: RenderText 模块仍不可用，继续等待")
+            return false
+        end
+    end
+    return true
+end
 
 -- 延迟检查设置（仅在第一次使用时）
 local function checkOptimizationSetting()
@@ -101,18 +119,24 @@ local function generateCacheKey(face, text, kerning, bold)
 end
 
 -- 缓存清理
-local function cleanCache(cache, count_var, limit)
-    if count_var > limit then
+local function cleanCache(cache, current_count, limit)
+    if current_count > limit then
         -- 简单的LRU清理：清空一半
+        local target_count = math.floor(limit / 2)
+        local removed = 0
+        local to_remove = current_count - target_count
+        
         for k, _ in pairs(cache) do
-            cache[k] = nil
-            count_var = count_var - 1
-            if count_var <= limit / 2 then
+            if removed >= to_remove then
                 break
             end
+            cache[k] = nil
+            removed = removed + 1
         end
+        
+        return current_count - removed
     end
-    return count_var
+    return current_count
 end
 
 -- 检查是否为ASCII文本
@@ -128,6 +152,12 @@ end
 
 -- 优化的文本尺寸测量
 function RenderTextFast:sizeUtf8Text(x, width, face, text, kerning, bold)
+    -- 确保 RenderText 可用
+    if not ensureRenderTextAvailable() then
+        -- 如果 RenderText 不可用，返回默认值
+        return { x = 0, y_top = 0, y_bottom = 0 }
+    end
+    
     -- 延迟检查优化设置
     checkOptimizationSetting()
     
@@ -168,6 +198,12 @@ end
 
 -- 优化的文本渲染
 function RenderTextFast:renderUtf8Text(dest_bb, x, baseline, face, text, kerning, bold, fgcolor, width, char_pads)
+    -- 确保 RenderText 可用
+    if not ensureRenderTextAvailable() then
+        -- 如果 RenderText 不可用，返回0
+        return 0
+    end
+    
     -- 延迟检查优化设置
     checkOptimizationSetting()
     
@@ -443,54 +479,8 @@ _G.RenderTextFast_clear_cache = function()
     logger.info("RenderTextFast: 所有缓存已清理")
 end
 
--- 热补丁文本组件，使其使用优化版本（保护性加载）
-local function patchTextWidget()
-    local ok, TextWidget = pcall(require, "ui/widget/textwidget")
-    if ok and TextWidget then
-        logger.info("RenderTextFast: 正在为TextWidget应用优化补丁")
-        local orig_TextWidget_init = TextWidget.init
-        
-        TextWidget.init = function(self, ...)
-            local result = orig_TextWidget_init(self, ...)
-            -- 这里可以添加特定的优化逻辑
-            return result
-        end
-    else
-        logger.info("RenderTextFast: TextWidget暂不可用，跳过补丁")
-    end
-end
-
-local function patchTextBoxWidget()
-    local ok, TextBoxWidget = pcall(require, "ui/widget/textboxwidget")
-    if ok and TextBoxWidget then
-        logger.info("RenderTextFast: 正在为TextBoxWidget应用优化补丁")
-        local orig_TextBoxWidget_init = TextBoxWidget.init
-        
-        TextBoxWidget.init = function(self, ...)
-            local result = orig_TextBoxWidget_init(self, ...)
-            -- 这里可以添加特定的优化逻辑
-            return result
-        end
-    else
-        logger.info("RenderTextFast: TextBoxWidget暂不可用，跳过补丁")
-    end
-end
-
--- 延迟应用热补丁，避免在启动早期干扰
-local function safeApplyPatches()
-    local ok1, err1 = pcall(patchTextWidget)
-    if not ok1 then
-        logger.warn("RenderTextFast: TextWidget补丁应用失败:", err1)
-    end
-    
-    local ok2, err2 = pcall(patchTextBoxWidget)
-    if not ok2 then
-        logger.warn("RenderTextFast: TextBoxWidget补丁应用失败:", err2)
-    end
-end
-
--- 安全应用热补丁
-safeApplyPatches()
+-- 注意：热补丁功能已移除，避免启动时的兼容性问题
+-- 优化功能通过RenderTextFast模块提供，无需修改现有组件
 
 logger.info("完整文本渲染优化补丁加载完成！")
 logger.info("RenderTextFast: 基于Lua的性能优化已加载（完整功能）")
