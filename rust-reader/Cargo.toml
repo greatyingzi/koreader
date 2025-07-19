@@ -1,0 +1,18 @@
+[package]
+name = "kindle-reader"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+memmap2 = "0.9"
+nix = { version = "0.27", features = ["ioctl"] }
+libc = "0.2"
+anyhow = "1.0"
+font8x8 = "0.3"
+sdl2 = { version = "0.36", features = ["bundled", "static-link"], optional = true }
+tempfile = "3.10"
+
+[features]
+default = ["desktop"]
+desktop = ["sdl2"]
+embedded = []
